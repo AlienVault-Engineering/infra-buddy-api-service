@@ -1,0 +1,268 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "",
+  "Parameters": {
+    "EnvName": {
+      "Description": "Logical name (environment-application-role) for this system",
+      "Type": "String"
+    },
+    "Environment": {
+      "Description": "The environment parameter for the docker container",
+      "Type": "String"
+    },
+    "VPCStack": {
+      "Description": "The stack name of the vpc to deploy",
+      "Type": "String"
+    },
+    "ClusterStack": {
+      "Description": "ECS Cluster stack name to deploy service into",
+      "Type": "String"
+    },
+    "APIPath": {
+      "Description": "The relative path for the applciation load balancer routing rule",
+      "Type": "String"
+    },
+    "DesiredCapacity": {
+      "Description": "Number of instances to launch in your ECS cluster - and number of containers to run of primary container",
+      "Type": "Number"
+    },
+    "ContainerImage": {
+      "Description": "Container image to use in the ECS task definition",
+      "Type": "String"
+    },
+    "ContainerPort": {
+      "Description": "The port the API is published on",
+      "Type": "Number"
+    },
+    "RulePriority": {
+      "Description": "The priority of the listener rule to use",
+      "Type": "Number"
+    },
+    "TaskMemory": {
+      "Description": "The amount of memory for use by the task",
+      "Type": "Number"
+    },
+    "TaskCPU": {
+      "Description": "The amount of cpu units (see ecs) for use by the task",
+      "Type": "Number"
+    }
+  },
+  "Resources": {
+    "ListenerRule": {
+      "Type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties": {
+        "Actions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": {
+              "Ref": "APITargetGroup"
+            }
+          }
+        ],
+        "Conditions": [
+          {
+            "Field": "path-pattern",
+            "Values": [
+              {"Fn::Sub": "/${APIPath}/*" }
+            ]
+          }
+        ],
+        "ListenerArn": {
+          "Fn::ImportValue": {
+            "Fn::Sub": "${ClusterStack}-ListenerARN"
+          }
+        },
+        "Priority": {
+          "Ref": "RulePriority"
+        }
+      }
+    },
+    "APITargetGroup": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": {
+        "HealthCheckPath": "/health",
+        "HealthCheckIntervalSeconds": 30,
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckTimeoutSeconds": 10,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 2,
+        "TargetGroupAttributes": [
+          {
+            "Key": "deregistration_delay.timeout_seconds",
+            "Value": "45"
+          }
+        ],
+        "Matcher": {
+          "HttpCode": "200"
+        },
+        "Port": {
+          "Ref": "ContainerPort"
+        },
+        "Protocol": "HTTP",
+        "VpcId": {
+          "Fn::ImportValue": {
+            "Fn::Sub": "${VPCStack}-VPC"
+          }
+        }
+      }
+    },
+    "ServiceIAMRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "ecs.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole"
+        ],
+        "Path": "/"
+      }
+    },
+    "Service": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "Cluster": {
+          "Fn::ImportValue": {
+            "Fn::Sub": "${ClusterStack}-ECSCluster"
+          }
+        },
+        "DeploymentConfiguration": {
+          "MaximumPercent": 600,
+          "MinimumHealthyPercent": 50
+        },
+        "DesiredCount": {
+          "Ref": "DesiredCapacity"
+        },
+        "LoadBalancers": [
+          {
+            "ContainerName": {
+              "Ref": "EnvName"
+            },
+            "ContainerPort": {
+              "Ref": "ContainerPort"
+            },
+            "TargetGroupArn": {
+              "Ref": "APITargetGroup"
+            }
+          }
+        ],
+        "Role": {
+          "Ref": "ServiceIAMRole"
+        },
+        "TaskDefinition": {
+          "Ref": "TaskDefinition"
+        }
+      }
+    },
+    "TaskDefinition": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": {
+          "Fn::Sub": "${AWS::StackName}-ECSTaskFamily"
+        },
+        "ContainerDefinitions": [
+          {
+            "VolumesFrom": [],
+            "MemoryReservation": {
+              "Ref": "TaskMemory"
+            },
+            "Essential": true,
+            "MountPoints": [],
+            "Name": {
+              "Ref": "EnvName"
+            },
+            "Environment": [
+              {
+                "Name": "ENVIRONMENT",
+                "Value": {
+                  "Ref": "Environment"
+                }
+              }
+            ],
+            "Image": {
+              "Ref": "ContainerImage"
+            },
+            "Cpu": {
+              "Ref": "TaskCPU"
+            },
+            "PortMappings": [
+              {
+                "ContainerPort": {
+                  "Ref": "ContainerPort"
+                }
+              }
+            ],
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Ref": "LogGroup"
+                },
+                "awslogs-region": {
+                  "Ref": "AWS::Region"
+                }
+              }
+            }
+          }
+        ],
+        "Volumes": []
+      }
+    },
+    "LogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 120
+      }
+    }
+  },
+  "Outputs": {
+    "ECSService": {
+      "Description": "The service name of the  contribution api",
+      "Value": {
+        "Ref": "Service"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ECSService"
+        }
+      }
+    },
+    "ECSServiceName": {
+      "Description": "The service name of the  contribution api",
+      "Value": {
+        "Fn::GetAtt": [
+          "Service",
+          "Name"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ECSServiceName"
+        }
+      }
+    },
+    "ECSTaskFamily": {
+      "Description": "The task name of the  contribution api",
+      "Value": {
+        "Fn::Sub": "${AWS::StackName}-ECSTaskFamily"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ECSTaskFamily"
+        }
+      }
+    }
+  }
+}
